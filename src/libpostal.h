@@ -150,6 +150,7 @@ typedef struct libpostal_address_parser_response {
     size_t num_components;
     char **components;
     char **labels;
+    char *country_guess; 
 } libpostal_address_parser_response_t;
 
 typedef libpostal_address_parser_response_t libpostal_parsed_address_components_t;

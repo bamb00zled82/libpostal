@@ -99,17 +99,29 @@ int main(int argc, char **argv) {
         if (country != NULL) options.country = country;
         if (language != NULL) options.language = language;
 
+        // modified function for outputingg guessed country code during inference
         if ((parsed = libpostal_parse_address(input, options))) {
             printf("\n");
             printf("Result:\n\n");
             printf("{\n");
             for (int i = 0; i < parsed->num_components; i++) {
                 char *component = parsed->components[i];
-
                 char *json_string = json_encode_string(component);
-                printf("  \"%s\": %s%s\n", parsed->labels[i], json_string, i < parsed->num_components - 1 ? "," : "");
+
+                // add a comma if it's not the last component, OR if country_guess exists
+                char *comma = (i < parsed->num_components - 1 || parsed->country_guess != NULL) ? "," : "";
+
+                printf("  \"%s\": %s%s\n", parsed->labels[i], json_string, comma);
                 free(json_string);
             }
+
+            // HEURISITCS: print the country guess if it exists
+            if (parsed->country_guess != NULL) {
+                char *json_guess = json_encode_string(parsed->country_guess);
+                printf("  \"country_guess\": %s\n", json_guess);
+                free(json_guess);
+            }
+
             printf("}\n");
             printf("\n");
 
