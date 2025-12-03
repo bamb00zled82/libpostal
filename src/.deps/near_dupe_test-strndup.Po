@@ -1,0 +1,2 @@
+near_dupe_test-strndup.o: strndup.c ../config.h
+../config.h:

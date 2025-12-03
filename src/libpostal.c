@@ -259,6 +259,11 @@ void libpostal_address_parser_response_destroy(libpostal_address_parser_response
         free(self->labels);
     }
 
+    // prevent memory leak
+    if (self->country_guess != NULL) {
+        free(self->country_guess);
+    }
+
     free(self);
 }
 
@@ -277,6 +282,96 @@ libpostal_address_parser_response_t *libpostal_parse_address(char *address, libp
     if (parsed == NULL) {
         log_error("Parser returned NULL\n");
         return NULL;
+    }
+
+    // ** HEURISTICS NEW FEATURES BELOW ** 
+
+    // initial country guess set to null
+    parsed->country_guess = NULL;
+
+    // fist heuristic: lists of states/provinces
+    // we use lowercase because libpostal usually normalizes output to lowercase
+    const char *us_states[] = {
+        "al", "ak", "az", "ar", "ca", "co", "ct", "de", "fl", "ga", 
+        "hi", "id", "il", "in", "ia", "ks", "ky", "la", "me", "md", 
+        "ma", "mi", "mn", "ms", "mo", "mt", "ne", "nv", "nh", "nj", 
+        "nm", "ny", "nc", "nd", "oh", "ok", "or", "pa", "ri", "sc", 
+        "sd", "tn", "tx", "ut", "vt", "va", "wa", "wv", "wi", "wy", 
+        "dc", NULL
+    };
+
+    // canada
+    const char *ca_provinces[] = {
+        "ab", "bc", "mb", "nb", "nl", "ns", "nt", "nu", "on", "pe", 
+        "qc", "sk", "yt", NULL
+    };
+
+    // australia
+    const char *au_states[] = {
+        "nsw", "vic", "qld", "wa", "sa", "tas", "act", "nt", NULL
+    };
+
+    for (size_t i = 0; i < parsed->num_components; i++) {
+        char *label = parsed->labels[i];
+        char *value = parsed->components[i];
+
+        // if found explicit country, normalize it 
+        if (strcmp(label, "country") == 0) {
+            if (strcmp(value, "united states") == 0 || strcmp(value, "usa") == 0) {
+                if (parsed->country_guess) free(parsed->country_guess); // clear previous guess
+                parsed->country_guess = strdup("US");
+            } 
+            else if (strcmp(value, "united kingdom") == 0 || strcmp(value, "uk") == 0 || strcmp(value, "great britain") == 0) {
+                if (parsed->country_guess) free(parsed->country_guess);
+                parsed->country_guess = strdup("GB");
+            }
+            else {
+                // default: just copy whatever the parser found
+                if (parsed->country_guess) free(parsed->country_guess);
+                parsed->country_guess = strdup(value);
+            }
+            break; // stop guessing if we found the country explicitly
+        }
+
+        // guess based on state/province
+        if (strcmp(label, "state") == 0) {
+            // check US
+            for (int k = 0; us_states[k] != NULL; k++) {
+                if (strcmp(value, us_states[k]) == 0) {
+                    if (parsed->country_guess == NULL) parsed->country_guess = strdup("US");
+                }
+            }
+            // check Canada
+            for (int k = 0; ca_provinces[k] != NULL; k++) {
+                if (strcmp(value, ca_provinces[k]) == 0) {
+                    if (parsed->country_guess == NULL) parsed->country_guess = strdup("CA");
+                }
+            }
+            // check Australia
+            for (int k = 0; au_states[k] != NULL; k++) {
+                if (strcmp(value, au_states[k]) == 0) {
+                    if (parsed->country_guess == NULL) parsed->country_guess = strdup("AU");
+                }
+            }
+        }
+        
+        // HEURISTICS: postcode 
+        // UK postcodes are alphanumeric (e.g., "SW1A 1AA") whereas US/DE/FR are usually just digits.
+        if (strcmp(label, "postcode") == 0) {
+             // check if it looks like a UK postcode (eg: contains letters, has space, not Canada format)
+             // Canada is usually A1A 1A1 (Letter Digit Letter [space] Digit Letter Digit)
+             // UK is more variable but usually starts with 1-2 letters
+             
+             // very rough check... if it starts with a letter and isn't already guessed as Canada
+             if (value[0] >= 'a' && value[0] <= 'z') {
+                 if (parsed->country_guess == NULL) {
+                      // CA postcodes always have 3 chars, space, 3 chars... len is 7
+                      if (strlen(value) != 7) {
+                          parsed->country_guess = strdup("GB");
+                      }
+                 }
+             }
+        }
     }
 
     return parsed;

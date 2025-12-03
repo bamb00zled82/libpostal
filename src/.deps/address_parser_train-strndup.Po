@@ -1,0 +1,2 @@
+address_parser_train-strndup.o: strndup.c ../config.h
+../config.h:
