@@ -19,6 +19,159 @@
 #include "string_utils.h"
 #include "token_types.h"
 
+#include <ctype.h>
+#include <string.h>
+
+// Country heuristics helpers
+
+static const char *US_STATES[] = {
+    "al","ak","az","ar","ca","co","ct","de","fl","ga",
+    "hi","id","il","in","ia","ks","ky","la","me","md",
+    "ma","mi","mn","ms","mo","mt","ne","nv","nh","nj",
+    "nm","ny","nc","nd","oh","ok","or","pa","ri","sc",
+    "sd","tn","tx","ut","vt","va","wa","wv","wi","wy",
+    "dc", NULL
+};
+
+static const char *CA_PROVINCES[] = {
+    "ab","bc","mb","nb","nl","ns","nt","nu","on","pe",
+    "qc","sk","yt", NULL
+};
+
+static const char *AU_STATES[] = {
+    "nsw","vic","qld","wa","sa","tas","act","nt", NULL
+};
+
+static const struct {
+    const char *name;
+    const char *iso2;
+} EXPLICIT_COUNTRY_MAP[] = {
+    {"united states", "US"},
+    {"united states of america", "US"},
+    {"usa", "US"},
+    {"us", "US"},
+
+    {"united kingdom", "GB"},
+    {"uk", "GB"},
+    {"great britain", "GB"},
+    {"england", "GB"},
+    {"scotland", "GB"},
+    {"wales", "GB"},
+
+    {"canada", "CA"},
+    {"ca", "CA"},
+
+    {"australia", "AU"},
+    {"au", "AU"},
+
+    {"germany", "DE"},
+    {"deutschland", "DE"},
+
+    {"france", "FR"},
+    {"india", "IN"},
+    {"brazil", "BR"},
+    {"japan", "JP"},
+    {"china", "CN"},
+};
+
+static const size_t EXPLICIT_COUNTRY_MAP_LEN =
+    sizeof(EXPLICIT_COUNTRY_MAP) / sizeof(EXPLICIT_COUNTRY_MAP[0]);
+
+static bool in_string_set(const char *value, const char *const *set) {
+    if (value == NULL) return false;
+    for (size_t i = 0; set[i] != NULL; i++) {
+        if (strcmp(value, set[i]) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool is_all_digits(const char *s) {
+    if (s == NULL || *s == '\0') return false;
+    for (; *s; s++) {
+        if (!isdigit((unsigned char)*s)) return false;
+    }
+    return true;
+}
+
+static bool has_alpha(const char *s) {
+    if (s == NULL) return false;
+    for (; *s; s++) {
+        if (isalpha((unsigned char)*s)) return true;
+    }
+    return false;
+}
+
+// US ZIP: 5 digits or 5-4
+static bool looks_like_us_zip(const char *s) {
+    if (s == NULL) return false;
+    size_t len = strlen(s);
+    if (len == 5 && is_all_digits(s)) return true;
+    if (len == 10 && s[5] == '-') {
+        char buf[6];
+        memcpy(buf, s, 5);
+        buf[5] = '\0';
+        if (!is_all_digits(buf)) return false;
+        if (!is_all_digits(s + 6)) return false;
+        return true;
+    }
+    return false;
+}
+
+// Canada: A1A 1A1 pattern-ish
+static bool looks_like_ca_postcode(const char *s) {
+    if (s == NULL) return false;
+    // strip space for simplicity
+    char buf[16];
+    size_t len = 0;
+    for (; *s && len < sizeof(buf) - 1; s++) {
+        if (*s != ' ') {
+            buf[len++] = (char)tolower((unsigned char)*s);
+        }
+    }
+    buf[len] = '\0';
+    if (len != 6) return false;
+    return isalpha((unsigned char)buf[0]) &&
+           isdigit((unsigned char)buf[1]) &&
+           isalpha((unsigned char)buf[2]) &&
+           isdigit((unsigned char)buf[3]) &&
+           isalpha((unsigned char)buf[4]) &&
+           isdigit((unsigned char)buf[5]);
+}
+
+// UK: very loose – has both letters and digits, length 5–8, usually ends with 2–3 letters
+static bool looks_like_uk_postcode(const char *s) {
+    if (s == NULL) return false;
+    size_t len = strlen(s);
+    if (len < 4 || len > 8) return false;
+    if (!has_alpha(s)) return false;
+    int digits = 0;
+    for (size_t i = 0; i < len; i++) {
+        if (isdigit((unsigned char)s[i])) digits++;
+    }
+    if (digits == 0) return false;
+
+    while (len > 0 && s[len - 1] == ' ') len--;
+    if (len >= 2 &&
+        isalpha((unsigned char)s[len - 1]) &&
+        isalpha((unsigned char)s[len - 2])) {
+        return true;
+    }
+    return false;
+}
+
+// Generic mapper for explicit "country" field
+static const char *map_country_name_to_iso2(const char *value) {
+    if (value == NULL) return NULL;
+    for (size_t i = 0; i < EXPLICIT_COUNTRY_MAP_LEN; i++) {
+        if (strcmp(value, EXPLICIT_COUNTRY_MAP[i].name) == 0) {
+            return EXPLICIT_COUNTRY_MAP[i].iso2;
+        }
+    }
+    return NULL;
+}
+
 static libpostal_normalize_options_t LIBPOSTAL_DEFAULT_OPTIONS = {
         .languages = NULL,
         .num_languages = 0,
@@ -284,95 +437,80 @@ libpostal_address_parser_response_t *libpostal_parse_address(char *address, libp
         return NULL;
     }
 
-    // ** HEURISTICS NEW FEATURES BELOW ** 
+    // HEURISTICS NEW FEATURES BELOW
 
-    // initial country guess set to null
+    // clear any existing guess
     parsed->country_guess = NULL;
 
-    // fist heuristic: lists of states/provinces
-    // we use lowercase because libpostal usually normalizes output to lowercase
-    const char *us_states[] = {
-        "al", "ak", "az", "ar", "ca", "co", "ct", "de", "fl", "ga", 
-        "hi", "id", "il", "in", "ia", "ks", "ky", "la", "me", "md", 
-        "ma", "mi", "mn", "ms", "mo", "mt", "ne", "nv", "nh", "nj", 
-        "nm", "ny", "nc", "nd", "oh", "ok", "or", "pa", "ri", "sc", 
-        "sd", "tn", "tx", "ut", "vt", "va", "wa", "wv", "wi", "wy", 
-        "dc", NULL
-    };
+    // if caller provided options.country, that’s a strong prior
+    if (options.country != NULL) {
+        if (parsed->country_guess) free(parsed->country_guess);
+        parsed->country_guess = strdup(options.country);
+    }
 
-    // canada
-    const char *ca_provinces[] = {
-        "ab", "bc", "mb", "nb", "nl", "ns", "nt", "nu", "on", "pe", 
-        "qc", "sk", "yt", NULL
-    };
-
-    // australia
-    const char *au_states[] = {
-        "nsw", "vic", "qld", "wa", "sa", "tas", "act", "nt", NULL
-    };
+    // scan parsed components for explicit country/state/postcode hints
+    const char *postcode_value = NULL;
 
     for (size_t i = 0; i < parsed->num_components; i++) {
         char *label = parsed->labels[i];
         char *value = parsed->components[i];
 
-        // if found explicit country, normalize it 
+        if (label == NULL || value == NULL) continue;
+
+        // explicit country component
         if (strcmp(label, "country") == 0) {
-            if (strcmp(value, "united states") == 0 || strcmp(value, "usa") == 0) {
-                if (parsed->country_guess) free(parsed->country_guess); // clear previous guess
-                parsed->country_guess = strdup("US");
-            } 
-            else if (strcmp(value, "united kingdom") == 0 || strcmp(value, "uk") == 0 || strcmp(value, "great britain") == 0) {
-                if (parsed->country_guess) free(parsed->country_guess);
-                parsed->country_guess = strdup("GB");
+            const char *mapped = map_country_name_to_iso2(value);
+            if (parsed->country_guess) {
+                free(parsed->country_guess);
+                parsed->country_guess = NULL;
             }
-            else {
-                // default: just copy whatever the parser found
-                if (parsed->country_guess) free(parsed->country_guess);
+            if (mapped != NULL) {
+                parsed->country_guess = strdup(mapped);
+            } else {
+                // fallback: copy whatever libpostal recognized
                 parsed->country_guess = strdup(value);
             }
-            break; // stop guessing if we found the country explicitly
+            // explicit beats everything else – we can stop here
+            break;
         }
 
-        // guess based on state/province
+        // state/province component
         if (strcmp(label, "state") == 0) {
-            // check US
-            for (int k = 0; us_states[k] != NULL; k++) {
-                if (strcmp(value, us_states[k]) == 0) {
-                    if (parsed->country_guess == NULL) parsed->country_guess = strdup("US");
+            if (in_string_set(value, US_STATES)) {
+                if (parsed->country_guess == NULL) {
+                    parsed->country_guess = strdup("US");
                 }
-            }
-            // check Canada
-            for (int k = 0; ca_provinces[k] != NULL; k++) {
-                if (strcmp(value, ca_provinces[k]) == 0) {
-                    if (parsed->country_guess == NULL) parsed->country_guess = strdup("CA");
+            } else if (in_string_set(value, CA_PROVINCES)) {
+                if (parsed->country_guess == NULL) {
+                    parsed->country_guess = strdup("CA");
                 }
-            }
-            // check Australia
-            for (int k = 0; au_states[k] != NULL; k++) {
-                if (strcmp(value, au_states[k]) == 0) {
-                    if (parsed->country_guess == NULL) parsed->country_guess = strdup("AU");
+            } else if (in_string_set(value, AU_STATES)) {
+                if (parsed->country_guess == NULL) {
+                    parsed->country_guess = strdup("AU");
                 }
             }
         }
-        
-        // HEURISTICS: postcode 
-        // UK postcodes are alphanumeric (e.g., "SW1A 1AA") whereas US/DE/FR are usually just digits.
-        if (strcmp(label, "postcode") == 0) {
-             // check if it looks like a UK postcode (eg: contains letters, has space, not Canada format)
-             // Canada is usually A1A 1A1 (Letter Digit Letter [space] Digit Letter Digit)
-             // UK is more variable but usually starts with 1-2 letters
-             
-             // very rough check... if it starts with a letter and isn't already guessed as Canada
-             if (value[0] >= 'a' && value[0] <= 'z') {
-                 if (parsed->country_guess == NULL) {
-                      // CA postcodes always have 3 chars, space, 3 chars... len is 7
-                      if (strlen(value) != 7) {
-                          parsed->country_guess = strdup("GB");
-                      }
-                 }
-             }
+
+        // remember postcode for later pattern heuristics
+        if (strcmp(label, "postcode") == 0 && postcode_value == NULL) {
+            postcode_value = value;
         }
     }
+
+    // if we still have no guess, try postcode patterns
+    if (parsed->country_guess == NULL && postcode_value != NULL) {
+        const char *pc = postcode_value;
+
+        if (looks_like_ca_postcode(pc)) {
+            parsed->country_guess = strdup("CA");
+        } else if (looks_like_us_zip(pc)) {
+            parsed->country_guess = strdup("US");
+        } else if (looks_like_uk_postcode(pc)) {
+            parsed->country_guess = strdup("GB");
+        }
+        // can add more here in future
+    }
+
 
     return parsed;
 }
