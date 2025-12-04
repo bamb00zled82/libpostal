@@ -76,7 +76,7 @@ int main(int argc, char **argv) {
     run_test(options, "Flinders St, Melbourne VIC 3000", "AU");
 
     // ---------------------------------------------------------
-    // TEST GROUP 4: UNITED KINGDOM (Postcode/Explicit)
+    // UNITED KINGDOM (Postcode/Explicit)
     // ---------------------------------------------------------
     // test 9: London (Explicit 'UK')
     run_test(options, "Buckingham Palace, London, UK", "GB");
