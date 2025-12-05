@@ -1,0 +1,23 @@
+language: c
+compiler:
+  - gcc
+  - clang
+
+# Install required build tools for libpostal
+addons:
+  apt:
+    packages:
+      - curl
+      - autoconf
+      - automake
+      - libtool
+      - pkg-config
+      - build-essential
+
+# Build and Test Script
+script:
+  - ./bootstrap.sh
+  # Configure with a temp data directory to prevent runtime errors during build
+  - ./configure --datadir=/tmp/libpostal_data
+  - make -j4
+  - make check  # Runs the QA/test suite
