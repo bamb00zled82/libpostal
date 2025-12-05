@@ -1,0 +1,2 @@
+language_classifier-strndup.o: strndup.c ../config.h
+../config.h:

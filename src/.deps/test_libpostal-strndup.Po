@@ -1,0 +1,2 @@
+../src/test_libpostal-strndup.o: ../src/strndup.c ../config.h
+../config.h:

@@ -1,0 +1,2 @@
+build_numex_table-strndup.o: strndup.c ../config.h
+../config.h:
